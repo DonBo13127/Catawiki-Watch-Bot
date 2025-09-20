@@ -26,7 +26,7 @@ else:
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "✅ Bot Catawiki Debug actif !"
+    return "✅ Bot Catawiki Super Verbose actif !"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
@@ -66,8 +66,11 @@ def get_selectors_with_gpt(html_snippet):
             temperature=0
         )
         selectors_json = response['choices'][0]['message']['content']
-        print("\nDEBUG JSON GPT pour ce lot:\n", selectors_json)
-        selectors = json.loads(selectors_json)
+        try:
+            selectors = json.loads(selectors_json)
+        except json.JSONDecodeError:
+            print("❌ Erreur JSON GPT invalide :", selectors_json)
+            return None
         return selectors
     except Exception as e:
         print("❌ Erreur GPT :", e)
@@ -77,19 +80,21 @@ def get_selectors_with_gpt(html_snippet):
 def get_lot_details(lot_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        print(f"\n🔎 Récupération du lot : {lot_url}")
+        print(f"\n🔎 URL Lot récupérée : {lot_url}")
         r = requests.get(lot_url, headers=headers, timeout=15)
         if r.status_code != 200:
             print("❌ Erreur HTTP :", r.status_code)
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
-        html_snippet = str(soup)  # HTML complet
-        print("\nDEBUG HTML complet du lot:\n", html_snippet[:3000], "...")  # console limitée
+        html_snippet = str(soup)
+        print("\nDEBUG HTML complet du lot (3000 chars max) :\n", html_snippet[:3000], "...")
 
         selectors = get_selectors_with_gpt(html_snippet)
         if not selectors:
-            print("❌ Sélecteurs GPT non trouvés")
+            print("⚠️ GPT n'a trouvé aucun sélecteur pour ce lot !")
             return None
+
+        print("\nDEBUG JSON GPT pour ce lot:\n", json.dumps(selectors, indent=2))
 
         def extract_first(tag):
             if isinstance(tag, list):
@@ -121,14 +126,15 @@ def get_lot_details(lot_url):
 
         print(f"DEBUG LOT FINAL: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
+
     except Exception as e:
         print(f"❌ Erreur récupération lot {lot_url} :", e)
         return None
 
-# --- Scraping principal (sans filtre pour debug) ---
+# --- Scraping principal ---
 def check_catawiki():
     global seen_lots
-    print("\n🔍 Vérification des enchères Catawiki + GPT (DEBUG)...")
+    print("\n🔍 Vérification des enchères Catawiki + GPT (Super Verbose)...")
     url = "https://www.catawiki.com/en/c/191-watches"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -141,13 +147,13 @@ def check_catawiki():
 
     for item in soup.find_all("a", class_="LotTile-link"):
         lot_url = "https://www.catawiki.com" + item.get("href")
-        lot = get_lot_details(lot_url)
+        get_lot_details(lot_url)
         time.sleep(0.5)
 
 # --- Lancer Flask dans un thread ---
 threading.Thread(target=run_flask).start()
 
-print("🚀 Bot DEBUG lancé. Vérification immédiate...")
+print("🚀 Bot Super Verbose lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
 check_catawiki()
