@@ -69,15 +69,15 @@ def get_lot_details(lot_url):
         title = title_tag.get_text(strip=True) if title_tag else ""
 
         # Prix actuel
-        price_tag = soup.find(lambda tag: tag.name=="span" and ("current bid" in tag.get_text(strip=True).lower() or "current price" in tag.get_text(strip=True).lower()))
+        price_tag = soup.find('span', class_=lambda x: x and "current-bid" in x)
         price = parse_euro(price_tag.get_text()) if price_tag else None
 
         # Estimation
-        est_tag = soup.find(lambda tag: tag.name=="span" and ("estimated value" in tag.get_text(strip=True).lower() or "estimation" in tag.get_text(strip=True).lower()))
+        est_tag = soup.find('span', class_=lambda x: x and "estimated-value" in x)
         estimation = parse_euro(est_tag.get_text()) if est_tag else None
 
         # Temps restant
-        time_tag = soup.find(lambda tag: tag.name=="span" and "ends in" in tag.get_text(strip=True).lower())
+        time_tag = soup.find('span', class_=lambda x: x and "time-left" in x)
         remaining = None
         if time_tag:
             m = re.search(r'(?:(\d+)h)?\s*(\d+)m', time_tag.get_text(strip=True))
