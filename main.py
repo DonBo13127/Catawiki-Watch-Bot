@@ -1,13 +1,14 @@
 import os
 import time
 import json
+import re
+import requests
 from datetime import timedelta
 from flask import Flask
 import threading
-import re
 import openai
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+import schedule
 
 # --- Config GPT ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -25,7 +26,7 @@ else:
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "✅ Bot Catawiki Playwright + GPT actif !"
+    return "✅ Bot Catawiki Requests + GPT actif !"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
@@ -40,7 +41,7 @@ def parse_euro(value_str):
     except:
         return None
 
-# --- Prompt GPT pour détecter tous les sélecteurs ---
+# --- GPT : détecter tous les sélecteurs ---
 def get_selectors_with_gpt(html_snippet):
     prompt = f"""
     Tu es un expert en web scraping. Analyse ce HTML et retourne **uniquement du JSON** pour extraire tous les sélecteurs possibles de :
@@ -73,12 +74,11 @@ def get_selectors_with_gpt(html_snippet):
         return None
 
 # --- Extraire détails d'un lot ---
-def get_lot_details(page, lot_url):
+def get_lot_details(lot_url):
     try:
         print(f"\n🔎 URL Lot : {lot_url}")
-        page.goto(lot_url)
-        time.sleep(3)  # Attente pour chargement
-        html_snippet = page.content()
+        r = requests.get(lot_url)
+        html_snippet = r.text
         print("\nDEBUG HTML du lot (3000 chars max) :", html_snippet[:3000], "...\n")
 
         selectors = get_selectors_with_gpt(html_snippet)
@@ -124,39 +124,38 @@ def get_lot_details(page, lot_url):
         print(f"❌ Erreur récupération lot {lot_url} :", e)
         return None
 
-# --- Scraper tous les lots avec Playwright ---
+# --- Scraper tous les lots ---
 def scrape_catawiki():
-    print("\n🔍 Scraping Catawiki avec Playwright + GPT (Super Verbose)...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto("https://www.catawiki.com/en/c/333-watches")
-        page.wait_for_timeout(5000)
+    print("\n🔍 Scraping Catawiki avec Requests + GPT (Super Verbose)...")
+    base_url = "https://www.catawiki.com/en/c/333-watches"
+    r = requests.get(base_url)
+    soup = BeautifulSoup(r.text, "html.parser")
 
-        # Scroller pour charger tous les lots
-        for _ in range(10):
-            page.keyboard.press("PageDown")
-            time.sleep(1)
+    items = soup.select("a.LotTile-link")
+    print("DEBUG: Nombre de lots trouvés :", len(items))
 
-        items = page.query_selector_all("a.LotTile-link")
-        print("DEBUG: Nombre de lots trouvés :", len(items))
+    for item in items:
+        lot_url = item.get("href")
+        if lot_url.startswith("/"):
+            lot_url = "https://www.catawiki.com" + lot_url
+        if lot_url in seen_lots:
+            continue
+        seen_lots.add(lot_url)
+        get_lot_details(lot_url)
+        time.sleep(1)
 
-        for item in items:
-            lot_url = item.get_attribute("href")
-            get_lot_details(page, lot_url)
-            time.sleep(1)
-
-        browser.close()
+    # Sauvegarde des lots vus
+    with open(SEEN_FILE, "w") as f:
+        json.dump(list(seen_lots), f)
 
 # --- Lancer Flask ---
 threading.Thread(target=run_flask).start()
-print("🚀 Bot Playwright + GPT lancé. Vérification immédiate...")
+print("🚀 Bot Requests + GPT lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
 scrape_catawiki()
 
 # --- Scheduler toutes les heures ---
-import schedule
 schedule.every().hour.do(scrape_catawiki)
 
 while True:
