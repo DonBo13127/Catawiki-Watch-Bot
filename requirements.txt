@@ -5,3 +5,4 @@ flask
 openai
 selenium
 undetected-chromedriver
+playwright
