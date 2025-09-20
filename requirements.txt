@@ -1,6 +1,4 @@
-playwright
-openai
-requests
-beautifulsoup4
-flask
-APScheduler
+playwright==1.37.1
+beautifulsoup4==4.12.2
+openai==1.8.4
+requests==2.31.0
