@@ -69,11 +69,11 @@ def get_lot_details(lot_url):
         title = title_tag.get_text(strip=True) if title_tag else ""
 
         # Prix actuel
-        price_tag = soup.find(lambda tag: tag.name=="span" and "current bid" in tag.get_text(strip=True).lower())
+        price_tag = soup.find(lambda tag: tag.name=="span" and ("current bid" in tag.get_text(strip=True).lower() or "current price" in tag.get_text(strip=True).lower()))
         price = parse_euro(price_tag.get_text()) if price_tag else None
 
         # Estimation
-        est_tag = soup.find(lambda tag: tag.name=="span" and "estimated value" in tag.get_text(strip=True).lower())
+        est_tag = soup.find(lambda tag: tag.name=="span" and ("estimated value" in tag.get_text(strip=True).lower() or "estimation" in tag.get_text(strip=True).lower()))
         estimation = parse_euro(est_tag.get_text()) if est_tag else None
 
         # Temps restant
@@ -85,6 +85,9 @@ def get_lot_details(lot_url):
                 hours = int(m.group(1)) if m.group(1) else 0
                 minutes = int(m.group(2))
                 remaining = timedelta(hours=hours, minutes=minutes)
+
+        # Debug log pour chaque lot
+        print(f"DEBUG: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
 
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
     except Exception as e:
@@ -118,7 +121,7 @@ def check_catawiki():
             continue
         if lot["estimation"] is None or lot["estimation"] < 5000:
             continue
-        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=240):
+        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=5):
             continue
 
         if lot_url not in seen_lots:
@@ -129,11 +132,11 @@ def check_catawiki():
 
     if new_results:
         body = "\n".join(new_results)
-        send_email("⚡ Alerte Catawiki – Lots sous-évalués <2500€", body)
+        send_email("⚡ Alerte Catawiki – Lots sous-évalués ≤2500€", body)
         with open(SEEN_FILE, "w") as f:
             json.dump(list(seen_lots), f)
     else:
-        print("⏳ Aucune enchère intéressante trouvée cette heure-ci.")
+        print("⏳ Aucune enchère intéressante trouvée cette vérification.")
 
 # --- Lancer Flask dans un thread ---
 threading.Thread(target=run_flask).start()
@@ -141,7 +144,7 @@ threading.Thread(target=run_flask).start()
 print("🚀 Bot lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
-check_catawiki()  # <-- lance le bot dès maintenant
+check_catawiki()  # scrape réel immédiat
 
 # --- Scheduler toutes les heures ---
 schedule.every().hour.do(check_catawiki)
