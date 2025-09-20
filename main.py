@@ -61,20 +61,20 @@ def parse_euro(value_str):
 # --- Prompt GPT amélioré pour détecter les bons sélecteurs ---
 def get_selectors_with_gpt(html_snippet):
     prompt = f"""
-    Tu es un assistant spécialisé en web scraping. Analyse le HTML fourni et retourne **uniquement en JSON** les sélecteurs CSS permettant d'extraire :
+    Tu es un expert en web scraping. Analyse ce HTML et retourne **uniquement du JSON** pour extraire :
     1. Le titre du lot (nom de la montre)
     2. Le prix actuel
     3. L'estimation
-    4. Le temps restant de l'enchère
+    4. Le temps restant
 
-    **Instructions précises :**
-    - Le JSON doit contenir les clés : title, price, estimation, remaining
-    - Chaque valeur est un **sélecteur CSS valide** utilisable avec BeautifulSoup `select_one`
-    - Ignore tout autre élément inutile
-    - Le HTML peut contenir des classes dynamiques ou des balises imbriquées, trouve les sélecteurs les plus fiables
+    **Instructions :**
+    - JSON avec clés : title, price, estimation, remaining
+    - Chaque valeur = sélecteur CSS utilisable avec BeautifulSoup `select_one`
+    - Ignore tout le reste
+    - Prends en compte que les classes peuvent être dynamiques
     - Retourne uniquement du JSON
 
-    HTML : {html_snippet[:2000]}...
+    HTML : {html_snippet}
     """
     try:
         response = openai.ChatCompletion.create(
@@ -94,19 +94,20 @@ def get_selectors_with_gpt(html_snippet):
 def get_lot_details(lot_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        print(f"🔎 Récupération du lot : {lot_url}")
+        print(f"\n🔎 Récupération du lot : {lot_url}")
         r = requests.get(lot_url, headers=headers, timeout=15)
         if r.status_code != 200:
             print("❌ Erreur HTTP :", r.status_code)
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
-        html_snippet = str(soup)[:2000]
+        html_snippet = str(soup)  # HTML complet
 
         selectors = get_selectors_with_gpt(html_snippet)
         if not selectors:
             print("❌ Sélecteurs GPT non trouvés")
             return None
 
+        # Extraction des infos
         title_tag = soup.select_one(selectors.get("title",""))
         title = title_tag.get_text(strip=True) if title_tag else "N/A"
 
@@ -119,11 +120,14 @@ def get_lot_details(lot_url):
         time_tag = soup.select_one(selectors.get("remaining",""))
         remaining = None
         if time_tag:
-            m = re.search(r'(?:(\d+)h)?\s*(\d+)m', time_tag.get_text(strip=True))
+            text = time_tag.get_text(strip=True)
+            print("DEBUG temps restant brut:", text)
+            m = re.search(r'(?:(\d+)d)?\s*(?:(\d+)h)?\s*(\d+)m', text)
             if m:
-                hours = int(m.group(1)) if m.group(1) else 0
-                minutes = int(m.group(2))
-                remaining = timedelta(hours=hours, minutes=minutes)
+                days = int(m.group(1)) if m.group(1) else 0
+                hours = int(m.group(2)) if m.group(2) else 0
+                minutes = int(m.group(3))
+                remaining = timedelta(days=days, hours=hours, minutes=minutes)
 
         print(f"DEBUG LOT: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
@@ -134,12 +138,13 @@ def get_lot_details(lot_url):
 # --- Scraping principal ---
 def check_catawiki():
     global seen_lots
-    print("🔍 Vérification des enchères Catawiki + GPT...")
+    print("\n🔍 Vérification des enchères Catawiki + GPT...")
     url = "https://www.catawiki.com/en/c/191-watches"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
+        print("DEBUG: page principale récupérée")
     except Exception as e:
         print("❌ Erreur requête principale :", e)
         return
