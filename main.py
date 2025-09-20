@@ -58,23 +58,24 @@ def parse_euro(value_str):
     except:
         return None
 
-# --- Prompt GPT amélioré pour détecter les bons sélecteurs ---
+# --- Prompt GPT pour détecter tous les sélecteurs ---
 def get_selectors_with_gpt(html_snippet):
     prompt = f"""
-    Tu es un expert en web scraping. Analyse ce HTML et retourne **uniquement du JSON** pour extraire :
-    1. Le titre du lot (nom de la montre)
+    Tu es un expert en web scraping. Analyse ce HTML et retourne **uniquement du JSON** pour extraire tous les sélecteurs possibles de :
+    1. Le titre du lot
     2. Le prix actuel
     3. L'estimation
     4. Le temps restant
 
-    **Instructions :**
-    - JSON avec clés : title, price, estimation, remaining
-    - Chaque valeur = sélecteur CSS utilisable avec BeautifulSoup `select_one`
-    - Ignore tout le reste
+    **Instructions très précises :**
+    - Le JSON doit contenir les clés : title, price, estimation, remaining
+    - Chaque valeur = un sélecteur CSS valide utilisable avec BeautifulSoup `select_one`
+    - Si plusieurs options existent, donne-les toutes sous forme de liste
+    - Retourne uniquement du JSON, sans explications
     - Prends en compte que les classes peuvent être dynamiques
-    - Retourne uniquement du JSON
+    - Fournis les sélecteurs les plus fiables pour extraire les informations exactes
 
-    HTML : {html_snippet}
+    HTML COMPLET : {html_snippet}
     """
     try:
         response = openai.ChatCompletion.create(
@@ -83,7 +84,7 @@ def get_selectors_with_gpt(html_snippet):
             temperature=0
         )
         selectors_json = response['choices'][0]['message']['content']
-        print("DEBUG GPT selectors:", selectors_json)
+        print("\nDEBUG JSON GPT pour ce lot:\n", selectors_json)
         selectors = json.loads(selectors_json)
         return selectors
     except Exception as e:
@@ -101,35 +102,43 @@ def get_lot_details(lot_url):
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
         html_snippet = str(soup)  # HTML complet
+        print("\nDEBUG HTML complet du lot:\n", html_snippet[:3000], "...")  # On limite l'affichage pour la console
 
         selectors = get_selectors_with_gpt(html_snippet)
         if not selectors:
             print("❌ Sélecteurs GPT non trouvés")
             return None
 
-        # Extraction des infos
-        title_tag = soup.select_one(selectors.get("title",""))
-        title = title_tag.get_text(strip=True) if title_tag else "N/A"
+        # Extraction des infos avec toutes les options si liste
+        def extract_first(tag):
+            if isinstance(tag, list):
+                for t in tag:
+                    element = soup.select_one(t)
+                    if element:
+                        return element.get_text(strip=True)
+                return None
+            elif isinstance(tag, str):
+                element = soup.select_one(tag)
+                return element.get_text(strip=True) if element else None
+            return None
 
-        price_tag = soup.select_one(selectors.get("price",""))
-        price = parse_euro(price_tag.get_text()) if price_tag else None
-
-        est_tag = soup.select_one(selectors.get("estimation",""))
-        estimation = parse_euro(est_tag.get_text()) if est_tag else None
-
-        time_tag = soup.select_one(selectors.get("remaining",""))
+        title = extract_first(selectors.get("title", [])) or "N/A"
+        price_str = extract_first(selectors.get("price", []))
+        price = parse_euro(price_str)
+        est_str = extract_first(selectors.get("estimation", []))
+        estimation = parse_euro(est_str)
+        time_str = extract_first(selectors.get("remaining", []))
         remaining = None
-        if time_tag:
-            text = time_tag.get_text(strip=True)
-            print("DEBUG temps restant brut:", text)
-            m = re.search(r'(?:(\d+)d)?\s*(?:(\d+)h)?\s*(\d+)m', text)
+        if time_str:
+            print("DEBUG temps restant brut:", time_str)
+            m = re.search(r'(?:(\d+)d)?\s*(?:(\d+)h)?\s*(\d+)m', time_str)
             if m:
                 days = int(m.group(1)) if m.group(1) else 0
                 hours = int(m.group(2)) if m.group(2) else 0
                 minutes = int(m.group(3))
                 remaining = timedelta(days=days, hours=hours, minutes=minutes)
 
-        print(f"DEBUG LOT: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
+        print(f"DEBUG LOT FINAL: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
     except Exception as e:
         print(f"❌ Erreur récupération lot {lot_url} :", e)
