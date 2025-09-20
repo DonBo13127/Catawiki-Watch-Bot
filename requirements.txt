@@ -1,4 +1,6 @@
+playwright
+openai
 requests
 beautifulsoup4
-openai
-schedule
+flask
+APScheduler
