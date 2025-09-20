@@ -6,9 +6,8 @@ from flask import Flask
 import threading
 import re
 import openai
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
+from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 # --- Config GPT ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -26,7 +25,7 @@ else:
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "✅ Bot Catawiki Selenium + GPT actif !"
+    return "✅ Bot Catawiki Playwright + GPT actif !"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
@@ -74,12 +73,12 @@ def get_selectors_with_gpt(html_snippet):
         return None
 
 # --- Extraire détails d'un lot ---
-def get_lot_details(driver, lot_url):
+def get_lot_details(page, lot_url):
     try:
         print(f"\n🔎 URL Lot : {lot_url}")
-        driver.get(lot_url)
-        time.sleep(3)  # Attendre le chargement
-        html_snippet = driver.page_source
+        page.goto(lot_url)
+        time.sleep(3)  # Attente pour chargement
+        html_snippet = page.content()
         print("\nDEBUG HTML du lot (3000 chars max) :", html_snippet[:3000], "...\n")
 
         selectors = get_selectors_with_gpt(html_snippet)
@@ -89,7 +88,6 @@ def get_lot_details(driver, lot_url):
 
         print("DEBUG JSON GPT :", json.dumps(selectors, indent=2))
 
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_snippet, "html.parser")
 
         def extract_first(tag):
@@ -126,34 +124,33 @@ def get_lot_details(driver, lot_url):
         print(f"❌ Erreur récupération lot {lot_url} :", e)
         return None
 
-# --- Scraper tous les lots avec Selenium ---
+# --- Scraper tous les lots avec Playwright ---
 def scrape_catawiki():
-    print("\n🔍 Scraping Catawiki avec Selenium + GPT (Super Verbose)...")
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # sans interface graphique
-    driver = webdriver.Chrome(options=options)
+    print("\n🔍 Scraping Catawiki avec Playwright + GPT (Super Verbose)...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto("https://www.catawiki.com/en/c/333-watches")
+        page.wait_for_timeout(5000)
 
-    driver.get("https://www.catawiki.com/en/c/333-watches")
-    time.sleep(5)
+        # Scroller pour charger tous les lots
+        for _ in range(10):
+            page.keyboard.press("PageDown")
+            time.sleep(1)
 
-    body = driver.find_element(By.TAG_NAME, "body")
-    for _ in range(10):
-        body.send_keys(Keys.PAGE_DOWN)
-        time.sleep(1)
+        items = page.query_selector_all("a.LotTile-link")
+        print("DEBUG: Nombre de lots trouvés :", len(items))
 
-    items = driver.find_elements(By.CSS_SELECTOR, "a.LotTile-link")
-    print("DEBUG: Nombre de lots trouvés :", len(items))
+        for item in items:
+            lot_url = item.get_attribute("href")
+            get_lot_details(page, lot_url)
+            time.sleep(1)
 
-    for item in items:
-        lot_url = item.get_attribute("href")
-        get_lot_details(driver, lot_url)
-        time.sleep(1)
-
-    driver.quit()
+        browser.close()
 
 # --- Lancer Flask ---
 threading.Thread(target=run_flask).start()
-print("🚀 Bot Selenium + GPT lancé. Vérification immédiate...")
+print("🚀 Bot Playwright + GPT lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
 scrape_catawiki()
