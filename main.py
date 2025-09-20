@@ -1,14 +1,14 @@
-import requests
-from bs4 import BeautifulSoup
-import schedule
-import time
 import os
+import time
+import json
 from datetime import timedelta
 from flask import Flask
 import threading
 import re
-import json
 import openai
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
 # --- Config GPT ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -22,11 +22,11 @@ if os.path.exists(SEEN_FILE):
 else:
     seen_lots = set()
 
-# --- Serveur Flask pour UptimeRobot ---
+# --- Flask pour UptimeRobot ---
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "✅ Bot Catawiki Super Verbose actif !"
+    return "✅ Bot Catawiki Selenium + GPT actif !"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
@@ -35,7 +35,7 @@ def run_flask():
 def parse_euro(value_str):
     if not value_str:
         return None
-    clean = re.sub(r'[^\d]', '', value_str)
+    clean = re.sub(r"[^\d]", "", value_str)
     try:
         return int(clean)
     except:
@@ -50,13 +50,10 @@ def get_selectors_with_gpt(html_snippet):
     3. L'estimation
     4. Le temps restant
 
-    **Instructions très précises :**
-    - JSON avec clés : title, price, estimation, remaining
-    - Chaque valeur = un sélecteur CSS valide utilisable avec BeautifulSoup `select_one`
-    - Si plusieurs options existent, donne-les toutes sous forme de liste
-    - Retourne uniquement du JSON, sans explications
-    - Prends en compte que les classes peuvent être dynamiques
-
+    JSON avec clés : title, price, estimation, remaining
+    Chaque valeur = un sélecteur CSS valide utilisable avec BeautifulSoup select_one
+    Si plusieurs options existent, donne-les toutes sous forme de liste
+    Retourne uniquement du JSON, sans explications
     HTML COMPLET : {html_snippet}
     """
     try:
@@ -76,25 +73,24 @@ def get_selectors_with_gpt(html_snippet):
         print("❌ Erreur GPT :", e)
         return None
 
-# --- Récupérer détails d'un lot avec GPT ---
-def get_lot_details(lot_url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+# --- Extraire détails d'un lot ---
+def get_lot_details(driver, lot_url):
     try:
-        print(f"\n🔎 URL Lot récupérée : {lot_url}")
-        r = requests.get(lot_url, headers=headers, timeout=15)
-        if r.status_code != 200:
-            print("❌ Erreur HTTP :", r.status_code)
-            return None
-        soup = BeautifulSoup(r.text, 'html.parser')
-        html_snippet = str(soup)
-        print("\nDEBUG HTML complet du lot (3000 chars max) :\n", html_snippet[:3000], "...")
+        print(f"\n🔎 URL Lot : {lot_url}")
+        driver.get(lot_url)
+        time.sleep(3)  # Attendre le chargement
+        html_snippet = driver.page_source
+        print("\nDEBUG HTML du lot (3000 chars max) :", html_snippet[:3000], "...\n")
 
         selectors = get_selectors_with_gpt(html_snippet)
         if not selectors:
             print("⚠️ GPT n'a trouvé aucun sélecteur pour ce lot !")
             return None
 
-        print("\nDEBUG JSON GPT pour ce lot:\n", json.dumps(selectors, indent=2))
+        print("DEBUG JSON GPT :", json.dumps(selectors, indent=2))
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_snippet, "html.parser")
 
         def extract_first(tag):
             if isinstance(tag, list):
@@ -116,8 +112,7 @@ def get_lot_details(lot_url):
         time_str = extract_first(selectors.get("remaining", []))
         remaining = None
         if time_str:
-            print("DEBUG temps restant brut:", time_str)
-            m = re.search(r'(?:(\d+)d)?\s*(?:(\d+)h)?\s*(\d+)m', time_str)
+            m = re.search(r"(?:(\d+)d)?\s*(?:(\d+)h)?\s*(\d+)m", time_str)
             if m:
                 days = int(m.group(1)) if m.group(1) else 0
                 hours = int(m.group(2)) if m.group(2) else 0
@@ -131,37 +126,42 @@ def get_lot_details(lot_url):
         print(f"❌ Erreur récupération lot {lot_url} :", e)
         return None
 
-# --- Scraping principal ---
-def check_catawiki():
-    global seen_lots
-    print("\n🔍 Vérification des enchères Catawiki + GPT (Super Verbose)...")
-    url = "https://www.catawiki.com/en/c/191-watches"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        print("DEBUG: page principale récupérée")
-    except Exception as e:
-        print("❌ Erreur requête principale :", e)
-        return
+# --- Scraper tous les lots avec Selenium ---
+def scrape_catawiki():
+    print("\n🔍 Scraping Catawiki avec Selenium + GPT (Super Verbose)...")
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # sans interface graphique
+    driver = webdriver.Chrome(options=options)
 
-    for item in soup.find_all("a", class_="LotTile-link"):
-        lot_url = "https://www.catawiki.com" + item.get("href")
-        get_lot_details(lot_url)
-        time.sleep(0.5)
+    driver.get("https://www.catawiki.com/en/c/333-watches")
+    time.sleep(5)
 
-# --- Lancer Flask dans un thread ---
+    body = driver.find_element(By.TAG_NAME, "body")
+    for _ in range(10):
+        body.send_keys(Keys.PAGE_DOWN)
+        time.sleep(1)
+
+    items = driver.find_elements(By.CSS_SELECTOR, "a.LotTile-link")
+    print("DEBUG: Nombre de lots trouvés :", len(items))
+
+    for item in items:
+        lot_url = item.get_attribute("href")
+        get_lot_details(driver, lot_url)
+        time.sleep(1)
+
+    driver.quit()
+
+# --- Lancer Flask ---
 threading.Thread(target=run_flask).start()
-
-print("🚀 Bot Super Verbose lancé. Vérification immédiate...")
+print("🚀 Bot Selenium + GPT lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
-check_catawiki()
+scrape_catawiki()
 
 # --- Scheduler toutes les heures ---
-schedule.every().hour.do(check_catawiki)
+import schedule
+schedule.every().hour.do(scrape_catawiki)
 
-# --- Boucle infinie ---
 while True:
     schedule.run_pending()
     time.sleep(60)
