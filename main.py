@@ -2,15 +2,15 @@ import os
 import time
 import json
 import re
-import requests
 from datetime import timedelta
 from flask import Flask
 import threading
-import openai
+import requests
 from bs4 import BeautifulSoup
 import schedule
 import smtplib
 from email.mime.text import MIMEText
+from openai import OpenAI
 
 # ----------------------------
 # CONFIG
@@ -18,15 +18,14 @@ from email.mime.text import MIMEText
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
-openai.api_key = OPENAI_API_KEY
-
 BASE_URL = "https://www.catawiki.com/en/c/333-watches"
 SEEN_FILE = "seen.json"
 
-# Filtrage
 MAX_PRICE = 2500
 MIN_ESTIMATION = 5000
 MAX_REMAINING_HOURS = 24
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ----------------------------
 # Historique lots vus
@@ -45,10 +44,7 @@ app = Flask(__name__)
 def home():
     return "✅ Bot Catawiki + GPT actif !"
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
-
-threading.Thread(target=run_flask).start()
+threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
 
 # ----------------------------
 # Utils
@@ -75,8 +71,9 @@ def parse_remaining(time_str):
 
 def send_email(lots):
     if not lots:
+        print("ℹ️ Aucun lot intéressant à envoyer par mail.")
         return
-    body = "Lots intéressants trouvés :\n\n"
+    body = "🔔 Lots intéressants trouvés :\n\n"
     for lot in lots:
         body += f"{lot['title']}\nPrix: {lot['price']} | Estimation: {lot['estimation']} | Temps restant: {lot['remaining']}\nURL: {lot['url']}\n\n"
 
@@ -100,25 +97,25 @@ def send_email(lots):
 # ----------------------------
 def detect_selectors_gpt(html_snippet):
     prompt = f"""
-    Tu es un expert en web scraping. Analyse ce HTML et retourne **uniquement du JSON** pour extraire tous les sélecteurs possibles de :
-    1. Le titre du lot
-    2. Le prix actuel
-    3. L'estimation
-    4. Le temps restant
+Tu es un expert en web scraping. Analyse ce HTML et retourne **uniquement du JSON** pour extraire tous les sélecteurs possibles de :
+1. Le titre du lot
+2. Le prix actuel
+3. L'estimation
+4. Le temps restant
 
-    JSON avec clés : title, price, estimation, remaining
-    Chaque valeur = un sélecteur CSS valide utilisable avec BeautifulSoup select_one
-    Si plusieurs options existent, donne-les toutes sous forme de liste
-    Retourne uniquement du JSON, sans explications
-    HTML COMPLET : {html_snippet}
+JSON avec clés : title, price, estimation, remaining
+Chaque valeur = un sélecteur CSS valide utilisable avec BeautifulSoup select_one
+Si plusieurs options existent, donne-les toutes sous forme de liste
+Retourne uniquement du JSON, sans explications
+HTML COMPLET : {html_snippet}
     """
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4",
-            messages=[{"role":"user","content":prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
-        selectors_json = response['choices'][0]['message']['content']
+        selectors_json = response.choices[0].message.content
         try:
             selectors = json.loads(selectors_json)
         except json.JSONDecodeError:
@@ -155,6 +152,7 @@ def scrape_lot(lot_url, selectors):
         remaining = parse_remaining(extract_first(selectors.get("remaining", [])))
 
         print(f"DEBUG LOT: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
+        print(f"DEBUG LOT HTML (limité 500 chars): {r.text[:500]}")
 
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
 
@@ -166,7 +164,7 @@ def scrape_lot(lot_url, selectors):
 # Scraping page principale (optimisé)
 # ----------------------------
 def scrape_catawiki():
-    print("\n🔍 Scraping Catawiki (optimisé)...")
+    print("\n🔍 Scraping Catawiki (optimisé + logs détaillés)...")
     r = requests.get(BASE_URL)
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -211,25 +209,23 @@ def scrape_catawiki():
 
         if price and estimation and remaining:
             if price <= MAX_PRICE and estimation >= MIN_ESTIMATION and remaining.total_seconds() <= MAX_REMAINING_HOURS*3600:
-                # Scrape complet du lot pour info détaillée
                 lot = scrape_lot(lot_url, selectors)
                 if lot:
                     interesting_lots.append(lot)
 
         seen_lots.add(lot_url)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     # Sauvegarde des lots vus
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen_lots), f)
 
-    # Envoi email
     send_email(interesting_lots)
 
 # ----------------------------
 # Execution
 # ----------------------------
-print("🚀 Bot Catawiki + GPT optimisé lancé. Vérification immédiate...")
+print("🚀 Bot Catawiki + GPT optimisé et super verbose lancé. Vérification immédiate...")
 scrape_catawiki()
 schedule.every().hour.do(scrape_catawiki)
 
