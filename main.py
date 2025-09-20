@@ -2,116 +2,156 @@ import os
 import time
 import smtplib
 from email.mime.text import MIMEText
-from bs4 import BeautifulSoup
+from email.mime.multipart import MIMEMultipart
 from playwright.sync_api import sync_playwright
-from apscheduler.schedulers.background import BackgroundScheduler
 import openai
-import json
+from bs4 import BeautifulSoup
+import threading
 
-# --- Configuration ---
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# --- CONFIG ---
 GMAIL_USER = os.environ.get("GMAIL_USER")
-GMAIL_PASSWORD = os.environ.get("GMAIL_PASSWORD")
-TARGET_URL = "https://www.catawiki.com/en/c/333-watches"
+GMAIL_PASS = os.environ.get("GMAIL_PASS")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+CHECK_INTERVAL = 3600  # 1h en secondes
+CATAWIKI_URL = "https://www.catawiki.com/en/c/333-watches"
 
 openai.api_key = OPENAI_API_KEY
 
-# --- Email function ---
+# --- FONCTIONS MAIL ---
 def send_email(subject, body):
-    msg = MIMEText(body, "html")
-    msg['Subject'] = subject
-    msg['From'] = GMAIL_USER
-    msg['To'] = GMAIL_USER
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(GMAIL_USER, GMAIL_PASSWORD)
-        server.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
-        server.quit()
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ✅ Email envoyé")
-    except Exception as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Erreur email : {e}")
+        msg = MIMEMultipart()
+        msg['From'] = GMAIL_USER
+        msg['To'] = GMAIL_USER
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
 
-# --- GPT Selectors function ---
-def get_selectors_with_gpt(html_sample):
-    prompt = f"""
-Tu es un expert en scraping HTML. Voici un extrait de page HTML : {html_sample[:2000]}
-Fournis-moi les sélecteurs CSS pour extraire chaque lot de montre :
-- Titre de la montre
-- Prix actuel
-- Estimation
-- Temps restant de l'enchère
-Retourne uniquement du JSON avec les clés title, price, estimation, remaining.
-"""
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(GMAIL_USER, GMAIL_PASS)
+        server.send_message(msg)
+        server.quit()
+        print(f"📧 Email envoyé : {subject}")
+    except Exception as e:
+        print(f"❌ Erreur envoi mail : {e}")
+
+# --- FONCTION GPT POUR IDENTIFIER LES SELECTEURS ---
+def gpt_find_selectors(html_snippet):
     try:
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
+        prompt = f"""
+Tu es un expert en scraping HTML. Analyse le code HTML ci-dessous et renvoie les selecteurs CSS exacts pour récupérer :
+1. le titre de la montre
+2. le prix actuel
+3. l'estimation
+4. le temps restant de l'enchère
+
+Retourne sous format JSON comme ceci :
+{{"title": "SELECTOR", "price": "SELECTOR", "estimation": "SELECTOR", "remaining": "SELECTOR"}}
+
+HTML à analyser :
+{html_snippet[:2000]}  # limite à 2000 caractères pour GPT
+"""
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
-        content = response.choices[0].message.content
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] DEBUG Sélecteurs GPT : {content}")
-        return json.loads(content)
+        content = response.choices[0].message['content']
+        import json
+        selectors = json.loads(content)
+        return selectors
     except Exception as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Erreur GPT : {e}")
-        return {"title": [], "price": [], "estimation": [], "remaining": []}
+        print(f"❌ Erreur GPT : {e}")
+        return {"title": None, "price": None, "estimation": None, "remaining": None}
 
-# --- Scraping function ---
+# --- FONCTION SCRAPING ---
 def scrape_catawiki():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 🔍 Scraping Catawiki (Playwright + GPT)...")
+    print("🔍 Scraping Catawiki (Playwright + GPT)...")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(TARGET_URL)
+            page.goto(CATAWIKI_URL, timeout=60000)
             html = page.content()
-            soup = BeautifulSoup(html, "html.parser")
+            soup = BeautifulSoup(html, 'html.parser')
 
-            # GPT pour trouver les sélecteurs
-            selectors = get_selectors_with_gpt(html)
+            lots = soup.select("a[href*='/en/l/']")  # tous les liens de lots
+            lots_urls = list(dict.fromkeys([lot['href'] for lot in lots if lot.get('href')]))  # unique + pas None
+            print(f"DEBUG: {len(lots_urls)} lots détectés")
 
-            # Extraire les lots
-            lots = soup.select(selectors.get("title", ["div"]))  # fallback
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] DEBUG Nombre de lots trouvés : {len(lots)}")
+            interesting_lots = []
 
-            interesting = []
-            for lot in lots:
+            for url in lots_urls:
+                full_url = f"https://www.catawiki.com{url}" if url.startswith("/") else url
+                page.goto(full_url, timeout=60000)
+                lot_html = page.content()
+                selectors = gpt_find_selectors(lot_html)
+
+                print(f"DEBUG URL: {full_url}")
+                print(f"DEBUG SELECTORS: {selectors}")
+
+                # Vérification que GPT a trouvé quelque chose
+                if not selectors or None in selectors.values():
+                    print("⚠️ GPT n'a pas trouvé tous les selecteurs pour ce lot")
+                    continue
+
+                lot_soup = BeautifulSoup(lot_html, 'html.parser')
+
+                def safe_get(soup, sel):
+                    try:
+                        el = soup.select_one(sel)
+                        return el.get_text(strip=True) if el else None
+                    except:
+                        return None
+
+                title = safe_get(lot_soup, selectors['title'])
+                price_text = safe_get(lot_soup, selectors['price'])
+                estimation_text = safe_get(lot_soup, selectors['estimation'])
+                remaining_text = safe_get(lot_soup, selectors['remaining'])
+
+                if not price_text or not remaining_text:
+                    continue
+
+                # Convertir prix et estimation en float
                 try:
-                    title = lot.get_text(strip=True)
-                    # Exemple : récupérer les autres infos via soup.select_one(sel)
-                    # price = ...
-                    # estimation = ...
-                    # remaining = ...
-                    # filtrage logique ici
-                    interesting.append(title)
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Lot trouvé : {title[:50]}")
-                except Exception as e:
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Erreur lot : {e}")
+                    price = float(''.join(filter(str.isdigit, price_text)))
+                    estimation = float(''.join(filter(str.isdigit, estimation_text)))
+                except:
+                    price = 0
+                    estimation = 0
 
-            if interesting:
-                body = "<br>".join(interesting)
-                send_email("Lots Catawiki intéressants", body)
+                # Convertir remaining_text en heures (ex: "23h 15m")
+                try:
+                    h, m = 0, 0
+                    if 'h' in remaining_text:
+                        h = int(remaining_text.split('h')[0])
+                        if 'm' in remaining_text:
+                            m = int(remaining_text.split('h')[1].split('m')[0])
+                    remaining_hours = h + m/60
+                except:
+                    remaining_hours = 999
+
+                # Filtre : estimation > 5000, prix < 2500, remaining < 24h
+                if estimation > 5000 and price < 2500 and remaining_hours <= 24:
+                    interesting_lots.append(f"{title} | {price_text} | {estimation_text} | {remaining_text} | {full_url}")
+
+            if interesting_lots:
+                body = "\n".join(interesting_lots)
+                send_email("Lots intéressants Catawiki", body)
             else:
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ⏳ Aucun lot intéressant trouvé cette vérification.")
+                print("⏳ Aucun lot intéressant trouvé cette vérification.")
+
             browser.close()
     except Exception as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Erreur HTTP/Playwright : {e}")
+        print(f"❌ Erreur HTTP/Playwright : {e}")
 
-# --- Scheduler ---
-scheduler = BackgroundScheduler()
-scheduler.add_job(scrape_catawiki, 'interval', hours=1)
-scheduler.start()
+# --- SCHEDULER ---
+def scheduler():
+    scrape_catawiki()
+    threading.Timer(CHECK_INTERVAL, scheduler).start()
+    print(f"⏰ Scheduler activé : scraping toutes les {CHECK_INTERVAL/3600} heures...")
 
-# --- Lancement immédiat ---
-scrape_catawiki()
-
-# --- Flask simple pour Railway ---
-from flask import Flask
-app = Flask(__name__)
-
-@app.route("/")
-def index():
-    return "Bot Catawiki + GPT actif."
-
+# --- MAIN ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    print("🚀 Bot Catawiki + GPT optimisé et super verbose lancé. Vérification immédiate...")
+    scheduler()
