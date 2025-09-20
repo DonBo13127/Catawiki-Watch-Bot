@@ -15,12 +15,6 @@ GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 TO_EMAIL = os.getenv("TO_EMAIL")
 
-# --- Liste des marques prestigieuses ---
-WATCH_KEYWORDS = [
-    "Rolex", "Patek", "Audemars", "Omega", "Vacheron",
-    "Jaeger", "IWC", "Cartier", "Hublot", "Richard Mille"
-]
-
 # --- Fichier historique des lots vus ---
 SEEN_FILE = "seen.json"
 if os.path.exists(SEEN_FILE):
@@ -70,12 +64,19 @@ def get_lot_details(lot_url):
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
 
+        # Titre
         title_tag = soup.find('h1')
         title = title_tag.get_text(strip=True) if title_tag else ""
 
+        # Prix actuel
         price_tag = soup.find(lambda tag: tag.name=="span" and "current bid" in tag.get_text(strip=True).lower())
         price = parse_euro(price_tag.get_text()) if price_tag else None
 
+        # Estimation
+        est_tag = soup.find(lambda tag: tag.name=="span" and "estimated value" in tag.get_text(strip=True).lower())
+        estimation = parse_euro(est_tag.get_text()) if est_tag else None
+
+        # Temps restant
         time_tag = soup.find(lambda tag: tag.name=="span" and "ends in" in tag.get_text(strip=True).lower())
         remaining = None
         if time_tag:
@@ -85,12 +86,12 @@ def get_lot_details(lot_url):
                 minutes = int(m.group(2))
                 remaining = timedelta(hours=hours, minutes=minutes)
 
-        return {"title": title, "url": lot_url, "price": price, "remaining": remaining}
+        return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
     except Exception as e:
         print(f"Erreur récupération lot {lot_url} :", e)
         return None
 
-# --- Scraping principal optimisé ---
+# --- Scraping principal ---
 def check_catawiki():
     global seen_lots
     print("🔍 Vérification des enchères Catawiki...")
@@ -106,47 +107,29 @@ def check_catawiki():
     new_results = []
 
     for item in soup.find_all("a", class_="LotTile-link"):
-        title_preview = item.get_text(strip=True)
         lot_url = "https://www.catawiki.com" + item.get("href")
 
-        if not any(keyword in title_preview for keyword in WATCH_KEYWORDS):
-            continue
-
-        # Filtrer rapidement avec le prix approximatif et temps approximatif
-        price_tag = item.find("span", class_="LotTile-price")
-        approx_price = parse_euro(price_tag.get_text() if price_tag else "")
-        time_tag = item.find("span", class_="LotTile-timeRemaining")
-        approx_time = None
-        if time_tag:
-            m = re.search(r'(?:(\d+)h)?\s*(\d+)m', time_tag.get_text(strip=True))
-            if m:
-                hours = int(m.group(1)) if m.group(1) else 0
-                minutes = int(m.group(2))
-                approx_time = timedelta(hours=hours, minutes=minutes)
-
-        if approx_price is None or approx_price > 3000:
-            continue
-        if approx_time is None or approx_time > timedelta(hours=1):
-            continue
-
-        # Ouvrir la page détail seulement si le lot est plausible
+        # Ouvrir la page détail pour vérifier prix, estimation et temps restant
         lot = get_lot_details(lot_url)
         if not lot:
             continue
-        if lot["price"] is None or lot["price"] > 3000:
+
+        if lot["price"] is None or lot["price"] > 2500:
+            continue
+        if lot["estimation"] is None or lot["estimation"] < 5000:
             continue
         if lot["remaining"] is None or lot["remaining"] > timedelta(hours=1):
             continue
 
         if lot_url not in seen_lots:
             seen_lots.add(lot_url)
-            new_results.append(f"{lot['title']} → {lot['url']} (Prix: €{lot['price']}, Temps restant: {lot['remaining']})")
+            new_results.append(f"{lot['title']} → {lot['url']} (Prix: €{lot['price']}, Estimation: €{lot['estimation']}, Temps restant: {lot['remaining']})")
 
         time.sleep(0.5)
 
     if new_results:
         body = "\n".join(new_results)
-        send_email("⚡ Alerte Catawiki – Nouveaux lots < 3000€ proches de fin", body)
+        send_email("⚡ Alerte Catawiki – Lots sous-évalués <2500€", body)
         with open(SEEN_FILE, "w") as f:
             json.dump(list(seen_lots), f)
     else:
