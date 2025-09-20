@@ -152,13 +152,16 @@ def check_catawiki():
     else:
         print("⏳ Aucune enchère intéressante trouvée cette heure-ci.")
 
-# --- Scheduler toutes les heures ---
-schedule.every().hour.do(check_catawiki)
-
 # --- Lancer Flask dans un thread ---
 threading.Thread(target=run_flask).start()
 
-print("🚀 Bot lancé. Vérification toutes les heures...")
+print("🚀 Bot lancé. Vérification immédiate...")
+
+# --- Exécution immédiate ---
+check_catawiki()  # <-- lance le bot dès maintenant
+
+# --- Scheduler toutes les heures ---
+schedule.every().hour.do(check_catawiki)
 
 # --- Boucle infinie ---
 while True:
