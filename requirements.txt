@@ -4,3 +4,4 @@ schedule
 flask
 openai
 selenium
+undetected-chromedriver
