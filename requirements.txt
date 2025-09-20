@@ -1,8 +1,4 @@
 requests
 beautifulsoup4
-schedule
-flask
 openai
-selenium
-undetected-chromedriver
-playwright
+schedule
