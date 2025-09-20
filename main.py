@@ -58,15 +58,22 @@ def parse_euro(value_str):
     except:
         return None
 
-# --- Utiliser GPT pour détecter les bons sélecteurs ---
+# --- Prompt GPT amélioré pour détecter les bons sélecteurs ---
 def get_selectors_with_gpt(html_snippet):
     prompt = f"""
-    Analyse ce HTML et retourne les sélecteurs CSS pour extraire :
-    - titre
-    - prix actuel
-    - estimation
-    - temps restant
-    Renvoie uniquement du JSON.
+    Tu es un assistant spécialisé en web scraping. Analyse le HTML fourni et retourne **uniquement en JSON** les sélecteurs CSS permettant d'extraire :
+    1. Le titre du lot (nom de la montre)
+    2. Le prix actuel
+    3. L'estimation
+    4. Le temps restant de l'enchère
+
+    **Instructions précises :**
+    - Le JSON doit contenir les clés : title, price, estimation, remaining
+    - Chaque valeur est un **sélecteur CSS valide** utilisable avec BeautifulSoup `select_one`
+    - Ignore tout autre élément inutile
+    - Le HTML peut contenir des classes dynamiques ou des balises imbriquées, trouve les sélecteurs les plus fiables
+    - Retourne uniquement du JSON
+
     HTML : {html_snippet[:2000]}...
     """
     try:
@@ -76,6 +83,7 @@ def get_selectors_with_gpt(html_snippet):
             temperature=0
         )
         selectors_json = response['choices'][0]['message']['content']
+        print("DEBUG GPT selectors:", selectors_json)
         selectors = json.loads(selectors_json)
         return selectors
     except Exception as e:
@@ -86,20 +94,21 @@ def get_selectors_with_gpt(html_snippet):
 def get_lot_details(lot_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
+        print(f"🔎 Récupération du lot : {lot_url}")
         r = requests.get(lot_url, headers=headers, timeout=15)
         if r.status_code != 200:
+            print("❌ Erreur HTTP :", r.status_code)
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
         html_snippet = str(soup)[:2000]
 
-        # Obtenir sélecteurs via GPT
         selectors = get_selectors_with_gpt(html_snippet)
         if not selectors:
+            print("❌ Sélecteurs GPT non trouvés")
             return None
 
-        # Extraire infos avec les sélecteurs
         title_tag = soup.select_one(selectors.get("title",""))
-        title = title_tag.get_text(strip=True) if title_tag else ""
+        title = title_tag.get_text(strip=True) if title_tag else "N/A"
 
         price_tag = soup.select_one(selectors.get("price",""))
         price = parse_euro(price_tag.get_text()) if price_tag else None
@@ -116,10 +125,10 @@ def get_lot_details(lot_url):
                 minutes = int(m.group(2))
                 remaining = timedelta(hours=hours, minutes=minutes)
 
-        print(f"DEBUG: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
+        print(f"DEBUG LOT: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
     except Exception as e:
-        print(f"Erreur récupération lot {lot_url} :", e)
+        print(f"❌ Erreur récupération lot {lot_url} :", e)
         return None
 
 # --- Scraping principal ---
@@ -130,11 +139,11 @@ def check_catawiki():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
     except Exception as e:
-        print("Erreur requête:", e)
+        print("❌ Erreur requête principale :", e)
         return
 
-    soup = BeautifulSoup(response.text, 'html.parser')
     new_results = []
 
     for item in soup.find_all("a", class_="LotTile-link"):
@@ -143,11 +152,15 @@ def check_catawiki():
         if not lot:
             continue
 
+        # Filtrage avancé
         if lot["price"] is None or lot["price"] > 2500:
+            print("❌ Lot ignoré, prix trop élevé ou inconnu")
             continue
         if lot["estimation"] is None or lot["estimation"] < 5000:
+            print("❌ Lot ignoré, estimation trop faible ou inconnue")
             continue
-        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=5):
+        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=24):
+            print("❌ Lot ignoré, temps restant > 24h ou inconnu")
             continue
 
         if lot_url not in seen_lots:
