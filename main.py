@@ -1,6 +1,5 @@
 import requests
 from bs4 import BeautifulSoup
-import smtplib
 import schedule
 import time
 import os
@@ -11,10 +10,7 @@ import re
 import json
 import openai
 
-# --- Config Email et GPT ---
-GMAIL_USER = os.getenv("GMAIL_USER")
-GMAIL_PASS = os.getenv("GMAIL_PASS")
-TO_EMAIL = os.getenv("TO_EMAIL")
+# --- Config GPT ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
@@ -30,23 +26,10 @@ else:
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "✅ Bot Catawiki + GPT actif !"
+    return "✅ Bot Catawiki Debug actif !"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
-
-# --- Envoi email ---
-def send_email(subject, body):
-    try:
-        message = f"Subject: {subject}\n\n{body}"
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(GMAIL_USER, GMAIL_PASS)
-        server.sendmail(GMAIL_USER, TO_EMAIL, message)
-        server.quit()
-        print("✅ Email envoyé avec succès !")
-    except Exception as e:
-        print("❌ Erreur lors de l'envoi de l'email :", e)
 
 # --- Parsing des valeurs en euro ---
 def parse_euro(value_str):
@@ -68,12 +51,11 @@ def get_selectors_with_gpt(html_snippet):
     4. Le temps restant
 
     **Instructions très précises :**
-    - Le JSON doit contenir les clés : title, price, estimation, remaining
+    - JSON avec clés : title, price, estimation, remaining
     - Chaque valeur = un sélecteur CSS valide utilisable avec BeautifulSoup `select_one`
     - Si plusieurs options existent, donne-les toutes sous forme de liste
     - Retourne uniquement du JSON, sans explications
     - Prends en compte que les classes peuvent être dynamiques
-    - Fournis les sélecteurs les plus fiables pour extraire les informations exactes
 
     HTML COMPLET : {html_snippet}
     """
@@ -102,14 +84,13 @@ def get_lot_details(lot_url):
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
         html_snippet = str(soup)  # HTML complet
-        print("\nDEBUG HTML complet du lot:\n", html_snippet[:3000], "...")  # On limite l'affichage pour la console
+        print("\nDEBUG HTML complet du lot:\n", html_snippet[:3000], "...")  # console limitée
 
         selectors = get_selectors_with_gpt(html_snippet)
         if not selectors:
             print("❌ Sélecteurs GPT non trouvés")
             return None
 
-        # Extraction des infos avec toutes les options si liste
         def extract_first(tag):
             if isinstance(tag, list):
                 for t in tag:
@@ -144,10 +125,10 @@ def get_lot_details(lot_url):
         print(f"❌ Erreur récupération lot {lot_url} :", e)
         return None
 
-# --- Scraping principal ---
+# --- Scraping principal (sans filtre pour debug) ---
 def check_catawiki():
     global seen_lots
-    print("\n🔍 Vérification des enchères Catawiki + GPT...")
+    print("\n🔍 Vérification des enchères Catawiki + GPT (DEBUG)...")
     url = "https://www.catawiki.com/en/c/191-watches"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -158,42 +139,15 @@ def check_catawiki():
         print("❌ Erreur requête principale :", e)
         return
 
-    new_results = []
-
     for item in soup.find_all("a", class_="LotTile-link"):
         lot_url = "https://www.catawiki.com" + item.get("href")
         lot = get_lot_details(lot_url)
-        if not lot:
-            continue
-
-        # Filtrage avancé
-        if lot["price"] is None or lot["price"] > 2500:
-            print("❌ Lot ignoré, prix trop élevé ou inconnu")
-            continue
-        if lot["estimation"] is None or lot["estimation"] < 5000:
-            print("❌ Lot ignoré, estimation trop faible ou inconnue")
-            continue
-        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=24):
-            print("❌ Lot ignoré, temps restant > 24h ou inconnu")
-            continue
-
-        if lot_url not in seen_lots:
-            seen_lots.add(lot_url)
-            new_results.append(f"{lot['title']} → {lot['url']} (Prix: €{lot['price']}, Estimation: €{lot['estimation']}, Temps restant: {lot['remaining']})")
         time.sleep(0.5)
-
-    if new_results:
-        body = "\n".join(new_results)
-        send_email("⚡ Alerte Catawiki – Lots sous-évalués ≤2500€", body)
-        with open(SEEN_FILE, "w") as f:
-            json.dump(list(seen_lots), f)
-    else:
-        print("⏳ Aucune enchère intéressante trouvée cette vérification.")
 
 # --- Lancer Flask dans un thread ---
 threading.Thread(target=run_flask).start()
 
-print("🚀 Bot lancé. Vérification immédiate...")
+print("🚀 Bot DEBUG lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
 check_catawiki()
