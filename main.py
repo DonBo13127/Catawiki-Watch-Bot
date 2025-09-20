@@ -9,13 +9,16 @@ from flask import Flask
 import threading
 import re
 import json
+import openai
 
-# --- Config Email ---
+# --- Config Email et GPT ---
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 TO_EMAIL = os.getenv("TO_EMAIL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
 
-# --- Fichier historique des lots vus ---
+# --- Historique des lots vus ---
 SEEN_FILE = "seen.json"
 if os.path.exists(SEEN_FILE):
     with open(SEEN_FILE, "r") as f:
@@ -27,7 +30,7 @@ else:
 app = Flask(__name__)
 @app.route("/")
 def home():
-    return "✅ Bot Catawiki actif !"
+    return "✅ Bot Catawiki + GPT actif !"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
@@ -55,7 +58,31 @@ def parse_euro(value_str):
     except:
         return None
 
-# --- Récupérer détails d'un lot ---
+# --- Utiliser GPT pour détecter les bons sélecteurs ---
+def get_selectors_with_gpt(html_snippet):
+    prompt = f"""
+    Analyse ce HTML et retourne les sélecteurs CSS pour extraire :
+    - titre
+    - prix actuel
+    - estimation
+    - temps restant
+    Renvoie uniquement du JSON.
+    HTML : {html_snippet[:2000]}...
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0
+        )
+        selectors_json = response['choices'][0]['message']['content']
+        selectors = json.loads(selectors_json)
+        return selectors
+    except Exception as e:
+        print("❌ Erreur GPT :", e)
+        return None
+
+# --- Récupérer détails d'un lot avec GPT ---
 def get_lot_details(lot_url):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -63,21 +90,24 @@ def get_lot_details(lot_url):
         if r.status_code != 200:
             return None
         soup = BeautifulSoup(r.text, 'html.parser')
+        html_snippet = str(soup)[:2000]
 
-        # Titre
-        title_tag = soup.find('h1')
+        # Obtenir sélecteurs via GPT
+        selectors = get_selectors_with_gpt(html_snippet)
+        if not selectors:
+            return None
+
+        # Extraire infos avec les sélecteurs
+        title_tag = soup.select_one(selectors.get("title",""))
         title = title_tag.get_text(strip=True) if title_tag else ""
 
-        # Prix actuel
-        price_tag = soup.find('span', class_=lambda x: x and "current-bid" in x)
+        price_tag = soup.select_one(selectors.get("price",""))
         price = parse_euro(price_tag.get_text()) if price_tag else None
 
-        # Estimation
-        est_tag = soup.find('span', class_=lambda x: x and "estimated-value" in x)
+        est_tag = soup.select_one(selectors.get("estimation",""))
         estimation = parse_euro(est_tag.get_text()) if est_tag else None
 
-        # Temps restant
-        time_tag = soup.find('span', class_=lambda x: x and "time-left" in x)
+        time_tag = soup.select_one(selectors.get("remaining",""))
         remaining = None
         if time_tag:
             m = re.search(r'(?:(\d+)h)?\s*(\d+)m', time_tag.get_text(strip=True))
@@ -86,9 +116,7 @@ def get_lot_details(lot_url):
                 minutes = int(m.group(2))
                 remaining = timedelta(hours=hours, minutes=minutes)
 
-        # Debug log pour chaque lot
         print(f"DEBUG: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
-
         return {"title": title, "url": lot_url, "price": price, "estimation": estimation, "remaining": remaining}
     except Exception as e:
         print(f"Erreur récupération lot {lot_url} :", e)
@@ -97,7 +125,7 @@ def get_lot_details(lot_url):
 # --- Scraping principal ---
 def check_catawiki():
     global seen_lots
-    print("🔍 Vérification des enchères Catawiki...")
+    print("🔍 Vérification des enchères Catawiki + GPT...")
     url = "https://www.catawiki.com/en/c/191-watches"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -111,8 +139,6 @@ def check_catawiki():
 
     for item in soup.find_all("a", class_="LotTile-link"):
         lot_url = "https://www.catawiki.com" + item.get("href")
-
-        # Ouvrir la page détail pour vérifier prix, estimation et temps restant
         lot = get_lot_details(lot_url)
         if not lot:
             continue
@@ -127,7 +153,6 @@ def check_catawiki():
         if lot_url not in seen_lots:
             seen_lots.add(lot_url)
             new_results.append(f"{lot['title']} → {lot['url']} (Prix: €{lot['price']}, Estimation: €{lot['estimation']}, Temps restant: {lot['remaining']})")
-
         time.sleep(0.5)
 
     if new_results:
@@ -144,7 +169,7 @@ threading.Thread(target=run_flask).start()
 print("🚀 Bot lancé. Vérification immédiate...")
 
 # --- Exécution immédiate ---
-check_catawiki()  # scrape réel immédiat
+check_catawiki()
 
 # --- Scheduler toutes les heures ---
 schedule.every().hour.do(check_catawiki)
