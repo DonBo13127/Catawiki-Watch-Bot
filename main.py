@@ -118,7 +118,7 @@ def check_catawiki():
             continue
         if lot["estimation"] is None or lot["estimation"] < 5000:
             continue
-        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=5):
+        if lot["remaining"] is None or lot["remaining"] > timedelta(hours=24):
             continue
 
         if lot_url not in seen_lots:
