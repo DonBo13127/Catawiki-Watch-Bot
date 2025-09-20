@@ -1,4 +1,5 @@
-playwright==1.37.1
-beautifulsoup4==4.12.2
-openai==1.8.4
-requests==2.31.0
+requests
+beautifulsoup4
+openai
+flask
+schedule
