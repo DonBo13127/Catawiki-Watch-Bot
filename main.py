@@ -1,13 +1,14 @@
 import os
 import time
 import json
-from datetime import timedelta
 import threading
-import requests
-import schedule
+from datetime import timedelta
+from openai import OpenAI
+from playwright.sync_api import sync_playwright
 import smtplib
 from email.mime.text import MIMEText
-from openai import OpenAI
+import schedule
+import flask
 
 # ----------------------------
 # CONFIG
@@ -15,13 +16,12 @@ from openai import OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
-BASE_API_URL = "https://www.catawiki.com/api/v1/lots?category=333&sort=end_time&order=asc&page=1"
-
-SEEN_FILE = "seen.json"
+CATAWIKI_URL = "https://www.catawiki.com/en/c/333-watches"
 
 MAX_PRICE = 2500
 MIN_ESTIMATION = 5000
 MAX_REMAINING_HOURS = 24
+SEEN_FILE = "seen.json"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -73,19 +73,22 @@ def send_email(lots):
         print("❌ Erreur envoi email :", e)
 
 # ----------------------------
-# GPT pour confirmer sélecteurs
+# GPT pour détecter champs
 # ----------------------------
-def detect_selectors_gpt(lot_json):
+def detect_fields_gpt(lot_html, lot_url):
     prompt = f"""
-Tu es un expert en web scraping. Analyse ce JSON de lot Catawiki et retourne **uniquement du JSON** pour les champs :
+Tu es un expert en web scraping. Voici le HTML d'un lot Catawiki :
+URL: {lot_url}
+
+{lot_html[:5000]}  # limite pour ne pas dépasser tokens
+
+Retourne uniquement du JSON pour :
 - title
 - price
 - estimation
 - remaining (en secondes)
 
-JSON exemple :
-{json.dumps(lot_json, indent=2)}
-Retourne uniquement du JSON, sans explications.
+Si tu ne trouves pas, mets null.
     """
     try:
         response = client.chat.completions.create(
@@ -105,48 +108,53 @@ Retourne uniquement du JSON, sans explications.
         return None
 
 # ----------------------------
-# Scraping page API
+# Scraping avec Playwright
 # ----------------------------
 def scrape_catawiki():
-    print("\n🔍 Scraping Catawiki API (optimisé + logs détaillés)...")
-    response = requests.get(BASE_API_URL)
-    if response.status_code != 200:
-        print("❌ Erreur récupération API :", response.status_code)
-        return
-
-    data = response.json()
-    items = data.get("lots", [])
-    print("DEBUG: Nombre de lots récupérés via API :", len(items))
-
+    print("\n🔍 Scraping Catawiki avec Playwright + GPT (Super Verbose)...")
     interesting_lots = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(CATAWIKI_URL)
+        time.sleep(5)  # attendre chargement complet
 
-    for lot in items:
-        lot_id = lot.get("id")
-        if lot_id in seen_lots:
-            continue
+        lots = page.query_selector_all("a.LotTile-link")
+        print(f"DEBUG: Nombre de lots trouvés : {len(lots)}")
 
-        lot_url = "https://www.catawiki.com" + lot.get("url", "")
-        print(f"DEBUG: Analyse lot {lot_id} | URL: {lot_url}")
+        for lot in lots:
+            lot_url = lot.get_attribute("href")
+            if not lot_url:
+                continue
+            full_url = "https://www.catawiki.com" + lot_url
+            lot_id = lot_url.split("/")[-1]
+            if lot_id in seen_lots:
+                continue
 
-        processed = detect_selectors_gpt(lot)
-        if not processed:
-            print("⚠️ GPT n'a trouvé aucun champ pour ce lot.")
+            print(f"DEBUG: Récupération HTML du lot {lot_id} | URL: {full_url}")
+            lot_html = lot.inner_html()
+
+            processed = detect_fields_gpt(lot_html, full_url)
+            if not processed:
+                print("⚠️ GPT n'a trouvé aucun champ pour ce lot.")
+                seen_lots.add(lot_id)
+                continue
+
+            title = processed.get("title", "N/A")
+            price = parse_euro(str(processed.get("price", 0)))
+            estimation = parse_euro(str(processed.get("estimation", 0)))
+            remaining = parse_remaining(int(processed.get("remaining", 0)))
+
+            print(f"DEBUG LOT: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
+
+            if price and estimation and remaining:
+                if price <= MAX_PRICE and estimation >= MIN_ESTIMATION and remaining.total_seconds() <= MAX_REMAINING_HOURS*3600:
+                    interesting_lots.append({"title": title, "price": price, "estimation": estimation, "remaining": remaining, "url": full_url})
+
             seen_lots.add(lot_id)
-            continue
+            time.sleep(0.3)
 
-        title = processed.get("title", "N/A")
-        price = parse_euro(str(processed.get("price", 0)))
-        estimation = parse_euro(str(processed.get("estimation", 0)))
-        remaining = parse_remaining(int(processed.get("remaining", 0)))
-
-        print(f"DEBUG LOT: {title} | Prix: {price} | Estimation: {estimation} | Temps restant: {remaining}")
-
-        if price and estimation and remaining:
-            if price <= MAX_PRICE and estimation >= MIN_ESTIMATION and remaining.total_seconds() <= MAX_REMAINING_HOURS*3600:
-                interesting_lots.append({"title": title, "price": price, "estimation": estimation, "remaining": remaining, "url": lot_url})
-
-        seen_lots.add(lot_id)
-        time.sleep(0.3)
+        browser.close()
 
     with open(SEEN_FILE, "w") as f:
         json.dump(list(seen_lots), f)
@@ -154,9 +162,8 @@ def scrape_catawiki():
     send_email(interesting_lots)
 
 # ----------------------------
-# Scheduler
+# Scheduler + Flask
 # ----------------------------
-import flask
 app = flask.Flask(__name__)
 @app.route("/")
 def home():
@@ -164,7 +171,7 @@ def home():
 
 threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
 
-print("🚀 Bot Catawiki + GPT optimisé lancé. Vérification immédiate...")
+print("🚀 Bot Playwright + GPT lancé. Vérification immédiate...")
 scrape_catawiki()
 schedule.every().hour.do(scrape_catawiki)
 
